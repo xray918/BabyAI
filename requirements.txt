@@ -1,0 +1,5 @@
+openai
+pyaudio
+ormsgpack
+SpeechRecognition
+pydub
