@@ -1,3 +1,4 @@
+from dotenv import load_dotenv
 import os
 import time
 from openai import OpenAI
@@ -7,6 +8,9 @@ import random
 
 MODEL_LIST = ["gpt-3.5-turbo", "gpt-4o", "gpt-4", "wenxin", "wenxin-4", "xunfei", "claude", "gpt-4-turbo",
               "gpt-4-turbo-preview", "gpt-4-1106-preview", "moonshot-v1-32k", "qwen-turbo", "gemini"]
+
+# 加载 .env 文件
+load_dotenv()
 
 def singleton(cls):
     instances = {}
@@ -26,7 +30,7 @@ class LLM(object):
         # qwen
 
         # kimi
-        api_key =  "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"
+        api_key =  os.getenv("OPENAI_API_KEY")
         api_base = "http://47.251.57.51:5000"
         client = OpenAI(api_key=api_key,base_url=api_base)
 
