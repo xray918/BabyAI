@@ -48,15 +48,15 @@ def listen():
     ]
 
     with sr.Microphone() as source:
-        print(f"调整噪音水平，不要说话...")
-        recognizer.adjust_for_ambient_noise(source, 3)
+        # print(f"调整噪音水平，不要说话...")
+        # recognizer.adjust_for_ambient_noise(source, 3)
         while True:
             try:
                 if StreamSpeak().get_speaking_status():
                     continue
 
-                # print(f"调整噪音水平，不要说话...")
-                # recognizer.adjust_for_ambient_noise(source)
+                print(f"调整噪音水平，不要说话...")
+                recognizer.adjust_for_ambient_noise(source)
                 print("请说...")
                 audio = recognizer.listen(source,timeout=10,phrase_time_limit=200)
                 # print("听结束...")
