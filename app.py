@@ -2,6 +2,7 @@
 import re
 import queue
 import threading
+import time
 
 from llm import *
 from speak import *
@@ -46,73 +47,65 @@ def listen():
             我：我喜欢玩游戏，特别是捉迷藏"""
                     },
     ]
+    stream_speak = StreamSpeak()
+    llm = LLM()
 
     with sr.Microphone() as source:
         # print(f"调整噪音水平，不要说话...")
-        # recognizer.adjust_for_ambient_noise(source, 3)
+        recognizer.adjust_for_ambient_noise(source, 2)
         while True:
             try:
-                if StreamSpeak().get_speaking_status():
+                if stream_speak.get_speaking_status():
+                    time.sleep(0.5)
                     continue
 
-                print(f"调整噪音水平，不要说话...")
-                recognizer.adjust_for_ambient_noise(source)
+                # print(f"调整噪音水平，不要说话...")
+                # recognizer.adjust_for_ambient_noise(source)
                 print("请说...")
-                audio = recognizer.listen(source,timeout=10,phrase_time_limit=200)
-                # print("听结束...")
-                StreamSpeak().text_queue.put({"type": "flag", "flag": "listen_over"})
+                audio = recognizer.listen(source, timeout=3, phrase_time_limit=10)
+                stream_speak.text_queue.put({"type": "flag", "flag": "listen_over"})
 
                 print("识别...")
                 question = recognizer.recognize_google(audio, language='zh-CN')
-
-                # question = LLM().voice_raw_to_text(audio)
-
                 print(f"you: {question}")
 
-                # 模拟大模型的回复
                 messages.append({"role": "user", "content": question})
-                # print("开始思考...")
-                response = LLM().reply_text_stream(messages, model="gpt-4o-mini", stream=True, temperature=0.7)
+                response = llm.reply_text_stream(messages, model="gpt-4o-mini", stream=True, temperature=0.7)
                 remaining_text = ""
                 chunk_buf = ""
                 content = ""
 
-                # print("AI准备回答...")
-                StreamSpeak().set_speaking_active(True)
-                StreamSpeak().text_queue.put({"type": "flag", "flag": "speak_start"})
-                # print(f"进入speaking 状态...")
+                stream_speak.set_speaking_active(True)
+                stream_speak.text_queue.put({"type": "flag", "flag": "speak_start"})
+
                 for chunk in response:
                     if chunk.choices and chunk.choices[0].delta.content:
-                        chunk_buf = chunk_buf + chunk.choices[0].delta.content
-                        content = content + chunk.choices[0].delta.content
+                        chunk_buf += chunk.choices[0].delta.content
+                        content += chunk.choices[0].delta.content
                         if len(chunk_buf) > 100:
                             sentence, remaining_text = extract_all_sentences(chunk_buf)
                             if sentence:
                                 chunk_buf = remaining_text
-                                StreamSpeak().text_queue.put({"type":"payload","payload":sentence})
-                                # print(f"本片段内容：{sentence}\n")
+                                stream_speak.text_queue.put({"type": "payload", "payload": sentence})
 
-                StreamSpeak().text_queue.put({"type": "payload", "payload": chunk_buf})
-                StreamSpeak().text_queue.put({"type": "flag", "flag": "over"})
+                stream_speak.text_queue.put({"type": "payload", "payload": chunk_buf})
+                stream_speak.text_queue.put({"type": "flag", "flag": "over"})
 
                 messages.append({"role": "assistant", "content": content})
                 print(f"AI：{content}")
 
-
             except sr.UnknownValueError:
                 print("抱歉，我没有听清楚。")
-                StreamSpeak().text_queue.put({"type": "flag", "flag": "over"})
+                stream_speak.text_queue.put({"type": "flag", "flag": "over"})
             except sr.RequestError as e:
                 print(f"无法连接到语音识别服务; {e}")
             except sr.WaitTimeoutError:
                 print("长时间没有检测到声音，超时。")
             except ValueError as e:
                 print(e)
-                StreamSpeak().text_queue.put({"type": "flag", "flag": "over"})
+                stream_speak.text_queue.put({"type": "flag", "flag": "over"})
             except Exception as e:
                 print(e)
-
-
 
 
 
