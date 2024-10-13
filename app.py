@@ -56,7 +56,8 @@ def listen():
         while True:
             try:
                 if stream_speak.get_speaking_status():
-                    time.sleep(0.5)
+                    print("AI正在说，暂停语音识别")
+                    time.sleep(1)
                     continue
 
                 # print(f"调整噪音水平，不要说话...")
