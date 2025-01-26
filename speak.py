@@ -114,34 +114,45 @@ class StreamSpeak:
         try:
             if msg.get("type") == "payload":
                 text = msg.get("payload","")
+                print(f"[TTS] Converting text to speech: {text}")
             else:
                 self.audio_queue.put(msg)
                 return
 
             request = ServeTTSRequest(
                 text=text,
-                # reference_id="7f40adb65e394374b7041ad27b43e0c2",
                 reference_id="8d8db016275a4ad08be54277aa982954",
                 latency="normal",
                 format="pcm",
                 chunk_length=200,
             )
+            print("[TTS] Sending request to fish.audio API...")
             with httpx.Client() as client:
-                with client.stream(
-                    "POST",
+                response = client.post(
                     "https://api.fish.audio/v1/tts",
                     content=ormsgpack.packb(request, option=ormsgpack.OPT_SERIALIZE_PYDANTIC),
                     headers={
-                        "authorization": "7d768b26025644edbf022ce9bfb3d425",
-                        "content-type": "application/msgpack",
+                        "Authorization": "Bearer 7d768b26025644edbf022ce9bfb3d425",
+                        "Content-Type": "application/msgpack",
                     },
                     timeout=None,
-                ) as response:
-                    for chunk in response.iter_bytes(10000):  # 增加每次读取的字节数
-                        self.audio_queue.put({"type": "payload", "payload": chunk})
-                        self.is_speaking = True  # 开始播放音频
+                )
+                
+                print(f"[TTS] API Response status: {response.status_code}")
+                if response.status_code != 200:
+                    print(f"[TTS] API Error: {response.text}")
+                    return
+                
+                audio_data = response.content
+                print(f"[TTS] Received audio data, size: {len(audio_data)} bytes")
+                self.audio_queue.put({"type": "payload", "payload": audio_data})
+                self.is_speaking = True
+                
         except Exception as e:
-            print(f"speak worker err:{e}")
+            print(f"[TTS] Error in speak worker: {str(e)}")
+            print(f"[TTS] Error type: {type(e)}")
+            import traceback
+            print(f"[TTS] Stack trace: {traceback.format_exc()}")
 
 
     def _play_worker(self):
@@ -156,39 +167,43 @@ class StreamSpeak:
                     time.sleep(0.3)
                 continue
             except Exception as e:
-                print(f"play worker err:{e}")
+                print(f"[PLAY] Error in play worker: {e}")
                 continue
 
             msg_type = msg.get("type")
+            print(f"[PLAY] Processing message type: {msg_type}")
 
             if msg_type == "payload":
                 audio_chunk = msg.get("payload")
+                print(f"[PLAY] Got audio chunk, size: {len(audio_chunk) if audio_chunk else 0} bytes")
 
                 if audio_chunk is None:
+                    print("[PLAY] Audio chunk is None, breaking")
                     break
 
-                self.stream.write(audio_chunk)
+                try:
+                    self.stream.write(audio_chunk)
+                    print("[PLAY] Successfully played audio chunk")
+                except Exception as e:
+                    print(f"[PLAY] Error playing audio chunk: {e}")
 
             elif msg_type == "flag":
                 flag = msg.get("flag")
+                print(f"[PLAY] Processing flag: {flag}")
                 if flag == "over":
                     self.is_speaking = False
                     self.is_thinking = False
                     self.play_audio('da')
-                    # print("AI说结束")
-                    # print("听开始")
                 elif flag == "listen_over":
                     self.is_thinking = True
-                    # print("听结束")
                 elif flag == "speak_start":
                     self.is_thinking = False
-                    # print("AI说开始")
                 elif flag == "exit":
                     self.audio_queue.task_done()
-                    print("退出")
+                    print("[PLAY] Received exit flag")
                     return
             else:
-                print(f"not defined type: {msg_type}")
+                print(f"[PLAY] Undefined message type: {msg_type}")
 
             self.audio_queue.task_done()
 
