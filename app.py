@@ -121,6 +121,13 @@ def listen():
 
                     # 等待一小段时间确保音频播放完成
                     time.sleep(0.2)
+                    
+                    # 清空麦克风缓存
+                    recognizer.adjust_for_ambient_noise(source, duration=0.1)
+                    try:
+                        recognizer.listen(source, timeout=0.1, phrase_time_limit=0.1)
+                    except sr.WaitTimeoutError:
+                        pass
 
                 except sr.WaitTimeoutError:
                     print("长时间没有检测到声音，超时。")
