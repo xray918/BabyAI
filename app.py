@@ -1,4 +1,3 @@
-
 import re
 import queue
 import threading
@@ -51,62 +50,95 @@ def listen():
     llm = LLM()
 
     with sr.Microphone() as source:
-        # print(f"调整噪音水平，不要说话...")
-        recognizer.adjust_for_ambient_noise(source, 2)
+        # 初始调整噪音水平
+        print("调整噪音水平，请稍等...")
+        recognizer.adjust_for_ambient_noise(source, duration=2)
+        
         while True:
             try:
+                # 检查AI是否正在说话
                 if stream_speak.get_speaking_status():
-                    print("AI正在说，暂停语音识别")
-                    time.sleep(1)
+                    time.sleep(0.2)  # 在树莓派上增加等待时间
                     continue
 
-                # print(f"调整噪音水平，不要说话...")
-                # recognizer.adjust_for_ambient_noise(source)
                 print("请说...")
-                audio = recognizer.listen(source, timeout=3, phrase_time_limit=10)
-                stream_speak.text_queue.put({"type": "flag", "flag": "listen_over"})
+                try:
+                    # 在录音前再次确认AI没有在说话
+                    if stream_speak.get_speaking_status():
+                        continue
+                    
+                    # 设置较短的超时时间
+                    audio = recognizer.listen(source, timeout=3, phrase_time_limit=10)
+                    
+                    # 录音后立即检查AI是否开始说话
+                    if stream_speak.get_speaking_status():
+                        print("检测到AI正在说话，丢弃当前录音")
+                        continue
+                    
+                    # 标记录音结束
+                    stream_speak.text_queue.put({"type": "flag", "flag": "listen_over"})
+                    
+                    # 等待一小段时间确保标记被处理
+                    time.sleep(0.1)
+                    
+                    print("识别...")
+                    question = recognizer.recognize_google(audio, language='zh-CN')
+                    print(f"you: {question}")
 
-                print("识别...")
-                question = recognizer.recognize_google(audio, language='zh-CN')
-                print(f"you: {question}")
+                    # 在发送到LLM之前确保AI没有在说话
+                    if stream_speak.get_speaking_status():
+                        print("AI正在说话，跳过这次输入")
+                        continue
 
-                messages.append({"role": "user", "content": question})
-                response = llm.reply_text_stream(messages, model="gpt-4o-mini", stream=True, temperature=0.7)
-                remaining_text = ""
-                chunk_buf = ""
-                content = ""
+                    messages.append({"role": "user", "content": question})
+                    
+                    # 设置说话状态
+                    stream_speak.set_speaking_active(True)
+                    stream_speak.text_queue.put({"type": "flag", "flag": "speak_start"})
+                    
+                    # 获取AI响应
+                    response = llm.reply_text_stream(messages, model="gpt-4o-mini", stream=True, temperature=0.7)
+                    remaining_text = ""
+                    chunk_buf = ""
+                    content = ""
 
-                stream_speak.set_speaking_active(True)
-                stream_speak.text_queue.put({"type": "flag", "flag": "speak_start"})
+                    for chunk in response:
+                        if chunk.choices and chunk.choices[0].delta.content:
+                            chunk_buf += chunk.choices[0].delta.content
+                            content += chunk.choices[0].delta.content
+                            if len(chunk_buf) > 100:
+                                sentence, remaining_text = extract_all_sentences(chunk_buf)
+                                if sentence:
+                                    chunk_buf = remaining_text
+                                    stream_speak.text_queue.put({"type": "payload", "payload": sentence})
 
-                for chunk in response:
-                    if chunk.choices and chunk.choices[0].delta.content:
-                        chunk_buf += chunk.choices[0].delta.content
-                        content += chunk.choices[0].delta.content
-                        if len(chunk_buf) > 100:
-                            sentence, remaining_text = extract_all_sentences(chunk_buf)
-                            if sentence:
-                                chunk_buf = remaining_text
-                                stream_speak.text_queue.put({"type": "payload", "payload": sentence})
+                    # 处理最后的文本
+                    if chunk_buf:
+                        stream_speak.text_queue.put({"type": "payload", "payload": chunk_buf})
+                    
+                    # 标记AI说话结束
+                    stream_speak.text_queue.put({"type": "flag", "flag": "over"})
+                    messages.append({"role": "assistant", "content": content})
+                    print(f"AI：{content}")
 
-                stream_speak.text_queue.put({"type": "payload", "payload": chunk_buf})
-                stream_speak.text_queue.put({"type": "flag", "flag": "over"})
+                    # 等待一小段时间确保音频播放完成
+                    time.sleep(0.2)
 
-                messages.append({"role": "assistant", "content": content})
-                print(f"AI：{content}")
+                except sr.WaitTimeoutError:
+                    print("长时间没有检测到声音，超时。")
+                    continue
 
             except sr.UnknownValueError:
                 print("抱歉，我没有听清楚。")
                 stream_speak.text_queue.put({"type": "flag", "flag": "over"})
             except sr.RequestError as e:
                 print(f"无法连接到语音识别服务; {e}")
-            except sr.WaitTimeoutError:
-                print("长时间没有检测到声音，超时。")
             except ValueError as e:
                 print(e)
                 stream_speak.text_queue.put({"type": "flag", "flag": "over"})
             except Exception as e:
                 print(e)
+                stream_speak.text_queue.put({"type": "flag", "flag": "over"})
 
 
 
