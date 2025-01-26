@@ -50,10 +50,8 @@ def listen():
     llm = LLM()
 
     with sr.Microphone() as source:
-        # 初始调整噪音水平
-        print("调整噪音水平，请稍等...")
-        recognizer.adjust_for_ambient_noise(source, duration=2)
-        
+        # print(f"调整噪音水平，不要说话...")
+        recognizer.adjust_for_ambient_noise(source, 2)
         while True:
             try:
                 # 检查AI是否正在说话
