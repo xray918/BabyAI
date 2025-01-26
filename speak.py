@@ -4,6 +4,7 @@ import speech_recognition as sr
 import queue
 import threading
 import httpx
+
 import ormsgpack
 from pydantic import BaseModel, conint
 from typing import Annotated, Literal
