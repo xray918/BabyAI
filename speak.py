@@ -4,6 +4,11 @@ import speech_recognition as sr
 import queue
 import threading
 import httpx
+import numpy as np
+import sounddevice as sd
+import webrtcvad
+from array import array
+from collections import deque
 
 import ormsgpack
 from pydantic import BaseModel, conint
@@ -54,7 +59,38 @@ class StreamSpeak:
     # lock = threading.Lock()  # 用于线程安全
     def __init__(self):
         self.p = PyAudio()
-        self.stream = self.p.open(frames_per_buffer=1000, format=pyaudio.paInt16, channels=1, rate=44100, output=True)
+        
+        # 修改采样率为 VAD 支持的值
+        self.RATE = 48000  # 改为 48kHz
+        self.CHANNELS = 1
+        self.CHUNK = 2048
+        self.BUFFER_DURATION = 0.2
+        self.BUFFER_SIZE = int(self.RATE * self.BUFFER_DURATION)
+        
+        # 创建音频缓冲区，添加淡入淡出
+        self.audio_buffer = deque(maxlen=self.BUFFER_SIZE)
+        self.fade_samples = int(0.01 * self.RATE)
+        
+        # 初始化 VAD，降低灵敏度
+        self.vad = webrtcvad.Vad(2)
+        
+        # 分别创建输入和输出流
+        self.input_stream = self.p.open(
+            format=pyaudio.paFloat32,
+            channels=self.CHANNELS,
+            rate=self.RATE,
+            input=True,
+            frames_per_buffer=self.CHUNK,
+            stream_callback=self._input_callback
+        )
+        
+        self.output_stream = self.p.open(
+            format=pyaudio.paFloat32,
+            channels=self.CHANNELS,
+            rate=self.RATE,
+            output=True,
+            frames_per_buffer=self.CHUNK
+        )
 
         self.text_queue = queue.Queue()
         self.audio_queue = queue.Queue()
@@ -83,8 +119,18 @@ class StreamSpeak:
     def play_audio(self, audio_key):
         if audio_key in self.audio_files:
             audio_chunk = self.audio_files[audio_key]
-            # 播放音频块
-            self.stream.write(audio_chunk)
+            # 添加淡入淡出效果
+            audio_data = np.frombuffer(audio_chunk, dtype=np.int16).astype(np.float32) / 32768.0
+            result = np.zeros_like(audio_data)
+            result[:] = audio_data[:]
+            
+            if len(result) > self.fade_samples * 2:
+                fade_in = np.linspace(0, 1, self.fade_samples)
+                fade_out = np.linspace(1, 0, self.fade_samples)
+                result[:self.fade_samples] = audio_data[:self.fade_samples] * fade_in
+                result[-self.fade_samples:] = audio_data[-self.fade_samples:] * fade_out
+            
+            self.output_stream.write(result.tobytes())
         else:
             print(f"Audio file '{audio_key}' not found.")
 
@@ -169,13 +215,91 @@ class StreamSpeak:
             import traceback
             print(f"[TTS] Stack trace: {traceback.format_exc()}")
 
+    def _input_callback(self, in_data, frame_count, time_info, status):
+        """只处理输入音频的回调函数"""
+        try:
+            # 将输入音频转换为numpy数组
+            audio_data = np.frombuffer(in_data, dtype=np.float32)
+            processed_data = np.zeros_like(audio_data)
+            processed_data[:] = audio_data[:]
+            
+            # 回声消除处理
+            if len(self.audio_buffer) > 0:
+                echo_sample = np.array(list(self.audio_buffer)[-len(audio_data):])
+                if len(echo_sample) == len(audio_data):
+                    fade_in = np.linspace(0, 1, self.fade_samples)
+                    fade_out = np.linspace(1, 0, self.fade_samples)
+                    
+                    result = np.zeros_like(processed_data)
+                    result[:] = processed_data[:]
+                    
+                    if len(result) > self.fade_samples * 2:
+                        # 应用淡入淡出
+                        result[:self.fade_samples] = processed_data[:self.fade_samples] * fade_in
+                        result[-self.fade_samples:] = processed_data[-self.fade_samples:] * fade_out
+                        
+                        # 减小回声消除的强度
+                        echo_reduction = 0.15
+                        result = result - (echo_reduction * echo_sample)
+                        
+                        # 应用噪声门限，使用更小的阈值
+                        noise_gate = 0.005
+                        noise_mask = np.abs(result) >= noise_gate
+                        result = result * noise_mask
+                        
+                        # 应用平滑处理
+                        window_size = 5
+                        result = np.convolve(result, np.ones(window_size)/window_size, mode='same')
+                        
+                        # 检测语音并调整音量
+                        is_speech = self._is_speech(result)
+                        if is_speech and self.is_speaking:
+                            reduction = 0.6
+                            volume_reduced = np.zeros_like(result)
+                            volume_reduced[:] = result[:] * reduction
+                            volume_reduced[:self.fade_samples] *= fade_in
+                            volume_reduced[-self.fade_samples:] *= fade_out
+                            result = volume_reduced
+                        
+                        return (result.tobytes(), pyaudio.paContinue)
+            
+            return (processed_data.tobytes(), pyaudio.paContinue)
+            
+        except Exception as e:
+            print(f"Error in input callback: {e}")
+            return (in_data, pyaudio.paContinue)
+
+    def _is_speech(self, audio_data):
+        """使用 WebRTC VAD 检测是否有语音"""
+        try:
+            # 将float32转换为int16，确保数据范围正确
+            audio_data_int = np.clip(audio_data * 32768, -32768, 32767).astype(np.int16)
+            
+            # VAD需要16位PCM数据
+            frame_duration = 20  # ms，使用较短的帧长度
+            samples_per_frame = int(self.RATE * frame_duration / 1000)
+            
+            # 确保数据长度满足要求
+            if len(audio_data_int) >= samples_per_frame:
+                # 只取需要的样本数
+                frame_data = audio_data_int[:samples_per_frame]
+                frame = frame_data.tobytes()
+                try:
+                    return self.vad.is_speech(frame, self.RATE)
+                except Exception as e:
+                    # 如果单个帧处理失败，返回 False 而不是抛出异常
+                    return False
+            
+            return False
+        except Exception as e:
+            print(f"Error in speech detection: {e}")
+            return False
 
     def _play_worker(self):
         while True:
             try:
                 msg = self.audio_queue.get(block=False)
             except queue.Empty:
-                # 如果队列为空，播放 MP3 文件
                 if self.is_thinking:
                     self.play_audio('popo')
                 else:
@@ -189,18 +313,16 @@ class StreamSpeak:
             print(f"[PLAY] Processing message type: {msg_type}")
 
             if msg_type == "payload":
-                audio_chunk = msg.get("payload")
-                print(f"[PLAY] Got audio chunk, size: {len(audio_chunk) if audio_chunk else 0} bytes")
-
-                if audio_chunk is None:
-                    print("[PLAY] Audio chunk is None, breaking")
-                    break
-
-                try:
-                    self.stream.write(audio_chunk)
-                    print("[PLAY] Successfully played audio chunk")
-                except Exception as e:
-                    print(f"[PLAY] Error playing audio chunk: {e}")
+                audio_data = msg.get("payload")
+                if audio_data:
+                    # 转换音频数据为float32格式
+                    audio_array = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
+                    
+                    # 存储到缓冲区用于回声消除
+                    self.audio_buffer.extend(audio_array)
+                    
+                    # 使用输出流播放
+                    self.output_stream.write(audio_array.tobytes())
 
             elif msg_type == "flag":
                 flag = msg.get("flag")
@@ -245,14 +367,18 @@ class StreamSpeak:
                 for chunk in response.iter_bytes(10000):  # 增加每次读取的字节数
                     wav_buf = wav_buf + chunk
                 print(f"播放...")
-                self.stream.write(wav_buf)
+                self.output_stream.write(wav_buf)
 
     def close(self):
-
         self.text_queue.put({"type": "flag", "flag": "exit"})
-        # self.audio_queue.put({"type": "flag", "flag": "over"})
         self.speak_thread.join()
         self.play_thread.join()
-        self.stream.stop_stream()
-        self.stream.close()
+        
+        # 关闭所有流
+        self.input_stream.stop_stream()
+        self.input_stream.close()
+        self.output_stream.stop_stream()
+        self.output_stream.close()
+        
         self.p.terminate()
+        self.audio_buffer.clear()

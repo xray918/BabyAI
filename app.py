@@ -44,7 +44,7 @@ def listen():
             我：你喜欢玩啥
             你：我喜欢搭乐高，我用乐高搭过一个长长的火箭哦，你喜欢啥？
             我：我喜欢玩游戏，特别是捉迷藏"""
-                    },
+        },
     ]
     stream_speak = StreamSpeak()
     llm = LLM()
@@ -56,41 +56,33 @@ def listen():
             try:
                 # 检查AI是否正在说话
                 if stream_speak.get_speaking_status():
-                    time.sleep(0.2)  # 在树莓派上增加等待时间
+                    time.sleep(0.2)
                     continue
 
                 print("请说...")
                 try:
-                    # 在录音前再次确认AI没有在说话
                     if stream_speak.get_speaking_status():
                         continue
                     
-                    # 设置较短的超时时间
                     audio = recognizer.listen(source, timeout=3, phrase_time_limit=10)
                     
-                    # 录音后立即检查AI是否开始说话
                     if stream_speak.get_speaking_status():
                         print("检测到AI正在说话，丢弃当前录音")
                         continue
                     
-                    # 标记录音结束
                     stream_speak.text_queue.put({"type": "flag", "flag": "listen_over"})
-                    
-                    # 等待一小段时间确保标记被处理
                     time.sleep(0.1)
                     
                     print("识别...")
                     question = recognizer.recognize_google(audio, language='zh-CN')
                     print(f"you: {question}")
 
-                    # 在发送到LLM之前确保AI没有在说话
                     if stream_speak.get_speaking_status():
                         print("AI正在说话，跳过这次输入")
                         continue
 
                     messages.append({"role": "user", "content": question})
                     
-                    # 设置说话状态
                     stream_speak.set_speaking_active(True)
                     stream_speak.text_queue.put({"type": "flag", "flag": "speak_start"})
                     
