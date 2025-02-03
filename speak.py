@@ -120,6 +120,7 @@ class StreamSpeak:
                 self.audio_queue.put(msg)
                 return
 
+            # 将 ServeTTSRequest 转换为字典
             request = ServeTTSRequest(
                 text=text,
                 reference_id="8d8db016275a4ad08be54277aa982954",
@@ -127,11 +128,24 @@ class StreamSpeak:
                 format="pcm",
                 chunk_length=200,
             )
+            
+            # 创建请求字典
+            request_dict = {
+                "text": request.text,
+                "reference_id": request.reference_id,
+                "latency": request.latency,
+                "format": request.format,
+                "chunk_length": request.chunk_length,
+                "references": [],
+                "normalize": request.normalize,
+                "mp3_bitrate": request.mp3_bitrate
+            }
+
             print("[TTS] Sending request to fish.audio API...")
             with httpx.Client() as client:
                 response = client.post(
                     "https://api.fish.audio/v1/tts",
-                    content=ormsgpack.packb(request, option=ormsgpack.OPT_SERIALIZE_PYDANTIC),
+                    content=ormsgpack.packb(request_dict),  # 使用字典而不是 Pydantic 模型
                     headers={
                         "Authorization": "Bearer 7d768b26025644edbf022ce9bfb3d425",
                         "Content-Type": "application/msgpack",
